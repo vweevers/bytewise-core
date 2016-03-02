@@ -28,13 +28,14 @@ var assert = util.assert = function (test, message) {
 
 var FLOAT_LENGTH = 8
 
-util.invertBytes = function (buffer) {
+util.invertBytes = function (buffer, limit, inplace) {
   var bytes = []
-  for (var i = 0, end = buffer.length; i < end; ++i) {
-    bytes.push(~buffer[i])
+  for (var i = 0; i < limit; ++i) {
+    if (inplace) buffer[i] = ~buffer[i]
+    else bytes.push(~buffer[i])
   }
 
-  return new Buffer(bytes)
+  return inplace ? buffer : new Buffer(bytes)
 }
 
 util.encodeFloat = function (value) {
@@ -44,7 +45,7 @@ util.encodeFloat = function (value) {
     // write negative numbers as negated positive values to invert bytes
     //
     buffer.writeDoubleBE(-value.valueOf(), 0)
-    return util.invertBytes(buffer)
+    return util.invertBytes(buffer, FLOAT_LENGTH, true)
   }
 
   //
@@ -55,10 +56,10 @@ util.encodeFloat = function (value) {
 }
 
 util.decodeFloat = function (buffer, base, negative) {
-  assert(buffer.length === FLOAT_LENGTH, 'Invalid float encoding length')
+  // assert(buffer.length === FLOAT_LENGTH, 'Invalid float encoding length')
 
   if (negative)
-    buffer = util.invertBytes(buffer)
+    buffer = util.invertBytes(buffer, FLOAT_LENGTH)
 
   var value = buffer.readDoubleBE(0)
   return negative ? -value : value
@@ -69,12 +70,12 @@ util.decodeFloat = function (buffer, base, negative) {
 //
 var SKIP_HIGH_BYTES = {}
 
-util.escapeFlat = function (buffer, options) {
+util.escapeFlat = function (buffer, limit, options) {
   //
   // escape high and low bytes 0x00 and 0xff (and by necessity, 0x01 and 0xfe)
   //
   var b, bytes = []
-  for (var i = 0, end = buffer.length; i < end; ++i) {
+  for (var i = 0; i < limit; ++i) {
     b = buffer[i]
 
     //
@@ -96,15 +97,15 @@ util.escapeFlat = function (buffer, options) {
       bytes.push(b)
   }
 
-  return new Buffer(bytes)
+  return bytes.length === buffer.length ? buffer : new Buffer(bytes)
 }
 
-util.unescapeFlat = function (buffer, options) {
+util.unescapeFlat = function (buffer, limit, options) {
   var b, bytes = []
   //
   // don't escape last byte
   //
-  for (var i = 0, end = buffer.length; i < end; ++i) {
+  for (var i = 0; i < limit; ++i) {
     b = buffer[i]
 
     //
@@ -125,24 +126,27 @@ util.unescapeFlat = function (buffer, options) {
     else
       bytes.push(b)
   }
-  return new Buffer(bytes)
+  return bytes.length === buffer.length ? buffer : new Buffer(bytes)
 }
 
-util.escapeFlatLow = function (buffer) {
-  return util.escapeFlat(buffer, SKIP_HIGH_BYTES)
+util.escapeFlatLow = function (buffer, limit) {
+  return util.escapeFlat(buffer, limit, SKIP_HIGH_BYTES)
 }
 
-util.unescapeFlatLow = function (buffer) {
-  return util.unescapeFlat(buffer, SKIP_HIGH_BYTES)
+util.unescapeFlatLow = function (buffer, limit) {
+  return util.unescapeFlat(buffer, limit, SKIP_HIGH_BYTES)
 }
 
 util.encodeList = function (source, base) {
   // TODO: cycle detection
   var buffers = []
   var undecodable
+  var total = 0
+  var bytes = []
 
   for (var i = 0, end = source.length; i < end; ++i) {
     var buffer = base.encode(source[i], null)
+    var length = buffer.length
 
     //
     // bypass assertions for undecodable types (i.e. range bounds)
@@ -150,6 +154,7 @@ util.encodeList = function (source, base) {
     undecodable || (undecodable = buffer.undecodable)
     if (undecodable) {
       buffers.push(buffer)
+      total+= length
       continue
     }
 
@@ -159,24 +164,29 @@ util.encodeList = function (source, base) {
     //
     // escape sorts if it requires it and add closing byte for element
     //
-    if (sort.codec && sort.codec.escape)
-      buffers.push(sort.codec.escape(buffer), new Buffer([ 0x00 ]))
+    if (sort.codec && sort.codec.escape) {
+      buffer = sort.codec.escape(buffer, length)
+      buffers.push(buffer, new Buffer([ 0x00 ]))
+      total+= buffer.length + 1
+    }
 
-    else
+    else {
       buffers.push(buffer)
+      total+= length
+    }
   }
 
   //
   // close the list with an end byte
   //
   buffers.push(new Buffer([ 0x00 ]))
-  buffer = Buffer.concat(buffers)
+  var result = Buffer.concat(buffers, total+1)
 
   //
-  // propagate undecoable bit if set
+  // propagate undecodable bit if set
   //
-  undecodable && (buffer.undecodable = undecodable)
-  return buffer
+  undecodable && (result.undecodable = undecodable)
+  return result
 }
 
 util.decodeList = function (buffer, base) {
@@ -236,7 +246,7 @@ util.parse = function (buffer, base, sort) {
   //
   var length = codec && codec.length
   if (typeof length === 'number')
-    return [ codec.decode(buffer.slice(0, length)), length ]
+    return [ codec.decode(buffer/*.slice(0, length)*/), length ]
 
   //
   // escaped sort, seek to end byte and unescape
@@ -248,7 +258,7 @@ util.parse = function (buffer, base, sort) {
     }
 
     assert(index < buffer.length, 'No closing byte found for sequence')
-    var unescaped = codec.unescape(buffer.slice(0, index))
+    var unescaped = codec.unescape(buffer/*.slice(0, index)*/, index)
 
     //
     // add 1 to index to account for closing tag byte
@@ -264,6 +274,11 @@ util.parse = function (buffer, base, sort) {
   var next
   while ((next = buffer[index]) !== 0x00) {
     sort = base.getType(next)
+
+    //
+    // todo: in addition to `limit`, pass around `offset`, so we can skip
+    // slicing here?
+    //
     var result = util.parse(buffer.slice(index + 1), base, sort)
     list.push(result[0])
 
@@ -288,7 +303,7 @@ function encodeBound(data, base) {
   var buffer = prefix ? base.encode(prefix, null) : new Buffer([ data.byte ])
 
   if (data.upper)
-    buffer = Buffer.concat([ buffer, new Buffer([ 0xff ]) ])
+    buffer = Buffer.concat([ buffer, new Buffer([ 0xff ]) ], buffer.length+1)
 
   return util.encodedBound(data, buffer)
 }

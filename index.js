@@ -25,7 +25,7 @@ function serialize(type, source, options) {
   if (options && options.nested && codec.escape)
     buffer = codec.escape(buffer)
 
-  var hint = typeof codec.length === 'number' ? (codec.length + 1) : void 0 
+  var hint = typeof codec.length === 'number' ? (codec.length + 1) : void 0
   var buffers = [ new Buffer([ type.byte ]), buffer ]
   return postEncode(Buffer.concat(buffers, hint), options)
 }
@@ -44,19 +44,17 @@ bytewise.encode = function(source, options) {
     return boundary.encode(source, bytewise)
 
   // encode standard value-typed sorts
-  var order = base.order
-  var sort
-  for (var i = 0, length = order.length; i < length; ++i) {
-    sort = sorts[order[i]]
+  for (var i = 0, order = base.order, length = order.length; i < length; ++i) {
+    var sort = sorts[order[i]]
 
     if (sort.is(source)) {
 
       // loop over any subsorts defined on sort
       // TODO: clean up
       var subsorts = sort.sorts ||  { '': sort }
-      for (key in subsorts) {
+      for (var key in subsorts) {
         var subsort = subsorts[key]
-        if (subsort.is(source)) 
+        if (subsort.is(source))
           return serialize(subsort, source, options)
       }
 
@@ -189,4 +187,3 @@ bytewise.getType = function (byte) {
 bytewise.buffer = true
 bytewise.stringCodec = codecs.HEX
 bytewise.type = 'bytewise-core'
-
